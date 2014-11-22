@@ -35,6 +35,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"net/textproto"
 	"os"
 	"strconv"
 	"strings"
@@ -58,8 +59,10 @@ const (
 	argServerHash   = "SERVERHASH="
 	argServerNonce  = "SERVERNONCE="
 
-	respProtocolInfoAuth       = "250-AUTH"
-	respProtocolInfoMethods    = "METHODS="
+	cmdOK = 250
+
+	respProtocolInfoAuth       = "AUTH"
+	respProtocolInfoMethods    = "AUTH METHODS="
 	respProtocolInfoCookieFile = "COOKIEFILE="
 
 	respAuthChallenge = "250 AUTHCHALLENGE "
@@ -144,7 +147,7 @@ func authSafeCookie(conn net.Conn, connReader *bufio.Reader, cookie []byte) ([]b
 	return m.Sum(nil), nil
 }
 
-func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Conn, appConnReader *bufio.Reader) error {
+func authenticate(torConn net.Conn, torConnReader *bufio.Reader, torConnTextprotoReader *textproto.Reader, appConn net.Conn, appConnReader *bufio.Reader) error {
 	var canNull, canCookie, canSafeCookie bool
 	var cookiePath string
 
@@ -153,29 +156,27 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	if _, err := torConn.Write(protocolInfoReq); err != nil {
 		return fmt.Errorf("writing PROTOCOLINFO request: %s", err)
 	}
+
+	var message string
+	var err error
+
 	for {
-		line, err := torConnReader.ReadBytes('\n')
+		_, message, err = torConnTextprotoReader.ReadResponse(cmdOK)
 		if err != nil {
-			return fmt.Errorf("reading PROTOCOLINFO response: %s", err)
+			return fmt.Errorf("reading PROTOCOLINFO response: %s\n", err)
 		}
-		lineStr := strings.TrimSpace(string(line))
-		if !strings.HasPrefix(lineStr, "250") {
-			return fmt.Errorf("parsing PROTOCOLINFO response")
-		} else if lineStr == "250 OK" {
-			break
-		}
-		splitResp := strings.SplitN(lineStr, " ", 3)
-		if splitResp[0] == respProtocolInfoAuth {
+		splitResp := strings.SplitN(message, "\n", 3)
+		if splitResp[0] == cmdProtocolInfo + " 1" {
+			// XXX
 			if len(splitResp) == 1 {
 				continue
 			}
 
 			methodsStr := strings.TrimPrefix(splitResp[1], respProtocolInfoMethods)
-			if methodsStr == splitResp[1] {
-				continue
-			}
 			methods := strings.Split(methodsStr, ",")
+			log.Printf("methods %s\n", methods)
 			for _, method := range methods {
+				log.Printf("method %s\n", method)
 				switch method {
 				case authMethodNull:
 					canNull = true
@@ -219,7 +220,9 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	} else {
 		return fmt.Errorf("no supported authentication methods")
 	}
-	if _, err := torConn.Write(authReq); err != nil {
+
+	_, err = torConn.Write(authReq)
+	if  err != nil {
 		return fmt.Errorf("writing AUTHENTICATE request: %s", err)
 	}
 	authResp, err := torConnReader.ReadBytes('\n')
@@ -289,8 +292,9 @@ func filterConnection(appConn net.Conn) {
 	// Authenticate with the real control port, and wait for the application to
 	// authenticate.
 	torConnReader := bufio.NewReader(torConn)
+	torConnTextprotoReader := textproto.NewReader(torConnReader)
 	appConnReader := bufio.NewReader(appConn)
-	if err = authenticate(torConn, torConnReader, appConn, appConnReader); err != nil {
+	if err = authenticate(torConn, torConnReader, torConnTextprotoReader, appConn, appConnReader); err != nil {
 		log.Printf("Failed to authenticate: %s\n", err)
 		return
 	}
