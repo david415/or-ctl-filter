@@ -80,7 +80,7 @@ const (
 
 var filteredControlAddr *net.UnixAddr
 
-type FilterConfig struct {
+type ServerClientFilterConfig struct {
 	ClientAllowed             []string          `json:"client-allowed"`
 	ClientAllowedPrefixes     []string          `json:"client-allowed-prefixes"`
 	ClientReplacements        map[string]string `json:"client-replacements"`
@@ -90,6 +90,13 @@ type FilterConfig struct {
 	ServerAllowedPrefixes     []string          `json:"server-allowed-prefixes"`
 	ServerReplacements        map[string]string `json:"server-replacements"`
 	ServerReplacementPrefixes map[string]string `json:"server-replacement-prefixes"`
+}
+
+type FilterConfig struct {
+	Allowed             []string          `json:"allowed"`
+	AllowedPrefixes     []string          `json:"allowed-prefixes"`
+	Replacements        map[string]string `json:"replacements"`
+	ReplacementPrefixes map[string]string `json:"replacement-prefixes"`
 }
 
 func hasReplacementCommand(cmd string, replacements map[string]string) (string, bool) {
@@ -291,7 +298,7 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	} else {
 		return fmt.Errorf("no supported authentication methods")
 	}
-	authResp, err := torConnReader.ReadBytes('\n')
+	_, err := torConnReader.ReadBytes('\n')
 	if err != nil {
 		return fmt.Errorf("reading AUTHENTICATE response: %s", err)
 	}
@@ -305,7 +312,45 @@ func syncedWrite(l *sync.Mutex, conn net.Conn, buf []byte) (int, error) {
 	return conn.Write(buf)
 }
 
-func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
+func filterCommand(cmd, failureCmd string, writeFunc func([]byte) (int, error), errChan chan error, filterConfig *FilterConfig) {
+	var err error
+	replacement, ok := hasReplacementPrefix(cmd, filterConfig.ReplacementPrefixes)
+	if ok {
+		log.Printf("replacing %s with %s", cmd, replacement)
+		if _, err = writeFunc([]byte(replacement + "\n")); err != nil {
+			errChan <- err
+		}
+		return
+	}
+	replacement, ok = hasReplacementCommand(cmd, filterConfig.Replacements)
+	if ok {
+		log.Printf("replacing %s with %s", cmd, replacement)
+		if _, err = writeFunc([]byte(replacement + "\n")); err != nil {
+			errChan <- err
+		}
+		return
+	}
+	if isPrefixAllowed(cmd, filterConfig.AllowedPrefixes) {
+		log.Printf("%s has an allowed prefix", cmd)
+		if _, err = writeFunc([]byte(cmd + "\n")); err != nil {
+			errChan <- err
+		}
+		return
+	}
+	if isCommandAllowed(cmd, filterConfig.Allowed) {
+		log.Printf("%s is allowed", cmd)
+		if _, err = writeFunc([]byte(cmd + "\n")); err != nil {
+			errChan <- err
+		}
+		return
+	}
+	log.Printf("A<-T denied %s", cmd)
+	if _, err = writeFunc([]byte(failureCmd + "\n")); err != nil {
+		errChan <- err
+	}
+}
+
+func filterConnection(appConn net.Conn, filterConfig *ServerClientFilterConfig) {
 	defer appConn.Close()
 
 	clientAddr := appConn.RemoteAddr()
@@ -354,50 +399,13 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 			lineStr := strings.TrimSpace(string(line))
 			log.Printf("meow A<-T: [%s]\n", lineStr)
 
-			replacement, ok := hasReplacementPrefix(lineStr, filterConfig.ServerReplacementPrefixes)
-			if ok {
-				log.Printf("replacing %s with %s", lineStr, replacement)
-				if _, err = writeAppConn([]byte(replacement + "\n")); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
+			serverFilterConfig := FilterConfig{
+				Allowed:             filterConfig.ServerAllowed,
+				AllowedPrefixes:     filterConfig.ServerAllowedPrefixes,
+				Replacements:        filterConfig.ServerReplacements,
+				ReplacementPrefixes: filterConfig.ServerReplacementPrefixes,
 			}
-
-			replacement, ok = hasReplacementCommand(lineStr, filterConfig.ServerReplacements)
-			if ok {
-				log.Printf("replacing %s with %s", lineStr, replacement)
-				if _, err = writeAppConn([]byte(replacement + "\n")); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
-			}
-
-			if isCommandAllowed(lineStr, filterConfig.ServerAllowed) {
-				log.Printf("%s is allowed", lineStr)
-				if _, err = writeAppConn([]byte(line)); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
-			}
-
-			if isPrefixAllowed(lineStr, filterConfig.ServerAllowedPrefixes) {
-				log.Printf("%s has an allowed prefix", lineStr)
-				if _, err = writeAppConn([]byte(line)); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
-			}
-
-			log.Printf("A<-T denied %s", lineStr)
-			if _, err = writeAppConn([]byte("250 OK\n")); err != nil {
-				errChan <- err
-				break
-			}
-
+			filterCommand(lineStr, "250 OK", writeAppConn, errChan, &serverFilterConfig)
 		}
 	}()
 
@@ -416,50 +424,22 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 			lineStr := strings.TrimSpace(string(line))
 			log.Printf("A->T: [%s]\n", lineStr)
 
-			replacement, ok := hasReplacementPrefix(lineStr, filterConfig.ClientReplacementPrefixes)
-			if ok {
-				log.Printf("replacing %s with %s", lineStr, replacement)
-				if _, err = torConn.Write([]byte(replacement + "\n")); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
+			clientFilterConfig := FilterConfig{
+				Allowed:             filterConfig.ClientAllowed,
+				AllowedPrefixes:     filterConfig.ClientAllowedPrefixes,
+				Replacements:        filterConfig.ClientReplacements,
+				ReplacementPrefixes: filterConfig.ClientReplacementPrefixes,
 			}
 
-			replacement, ok = hasReplacementCommand(lineStr, filterConfig.ClientReplacements)
-			if ok {
-				log.Printf("replacing %s with %s", lineStr, replacement)
-				if _, err = torConn.Write([]byte(replacement + "\n")); err != nil { // XXX need \n ?
+			writeToTor := func(line []byte) (int, error) {
+				var err error
+				n := 0
+				if n, err = torConn.Write([]byte(line)); err != nil { // XXX need \n ?
 					errChan <- err
-					break
 				}
-				continue
+				return n, err
 			}
-
-			if isCommandAllowed(lineStr, filterConfig.ClientAllowed) {
-				log.Printf("%s is allowed", lineStr)
-				if _, err = torConn.Write([]byte(line)); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
-			}
-
-			if isPrefixAllowed(lineStr, filterConfig.ClientAllowedPrefixes) {
-				log.Printf("%s has an allowed prefix", lineStr)
-				if _, err = torConn.Write([]byte(line)); err != nil { // XXX need \n ?
-					errChan <- err
-					break
-				}
-				continue
-			}
-
-			log.Printf("A->T: denied command: [%s]\n", lineStr)
-			//if _, err = writeAppConn([]byte(errUnrecognizedCommand)); err != nil {
-			if _, err = writeAppConn([]byte("250 OK\n")); err != nil {
-				errChan <- err
-				break
-			}
+			filterCommand(lineStr, "250 OK", writeToTor, errChan, &clientFilterConfig)
 		}
 	}()
 
@@ -476,7 +456,7 @@ func main() {
 	var enableLogging bool
 	var logFile string
 	var configFile string
-	var filterConfig FilterConfig
+	var filterConfig ServerClientFilterConfig
 	var err error
 
 	flag.BoolVar(&enableLogging, "enable-logging", false, "enable logging")
