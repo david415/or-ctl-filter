@@ -268,12 +268,10 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	// Authenticate using the best possible authentication method.
 	var authReq []byte
 	if canNull {
-		log.Print("meowwwwwwwwwwwwwwwwwwwwwwwww canNull")
 		if _, err := torConn.Write([]byte(cmdAuthenticate + "\n")); err != nil {
 			return fmt.Errorf("writing AUTHENTICATE request: %s", err)
 		}
 	} else if (canCookie || canSafeCookie) && (cookiePath != "") {
-		log.Print("cookie")
 		// Read the auth cookie.
 		cookie, err := readAuthCookie(cookiePath)
 		if err != nil {
@@ -287,7 +285,6 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 		}
 		cookieStr := hex.EncodeToString(cookie)
 		authReq = []byte(fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr))
-		log.Printf("writing auth %s", authReq)
 		if _, err := torConn.Write(authReq); err != nil {
 			return fmt.Errorf("writing AUTHENTICATE request: %s", err)
 		}
@@ -298,8 +295,6 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	if err != nil {
 		return fmt.Errorf("reading AUTHENTICATE response: %s", err)
 	}
-
-	log.Printf("got response %s ; end of authenticate", authResp)
 	return nil
 }
 
@@ -312,8 +307,6 @@ func syncedWrite(l *sync.Mutex, conn net.Conn, buf []byte) (int, error) {
 
 func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 	defer appConn.Close()
-
-	log.Print("filter connection")
 
 	clientAddr := appConn.RemoteAddr()
 	log.Printf("New app connection from: %s\n", clientAddr)
@@ -353,7 +346,6 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 		defer torConn.Close()
 
 		for {
-			log.Print("reading from server")
 			line, err := torConnReader.ReadBytes('\n')
 			if err != nil {
 				errChan <- err
@@ -388,7 +380,6 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 					errChan <- err
 					break
 				}
-				log.Print("continue")
 				continue
 			}
 
@@ -401,7 +392,7 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 				continue
 			}
 
-			log.Printf("A<-T denied %s !!!!!!!!!!!!!!!!!!!!!!!!!!!!", lineStr)
+			log.Printf("A<-T denied %s", lineStr)
 			if _, err = writeAppConn([]byte("250 OK\n")); err != nil {
 				errChan <- err
 				break
@@ -451,10 +442,8 @@ func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 					errChan <- err
 					break
 				}
-				log.Print("continue")
 				continue
 			}
-			log.Printf("%s is NOT allowed", lineStr)
 
 			if isPrefixAllowed(lineStr, filterConfig.ClientAllowedPrefixes) {
 				log.Printf("%s has an allowed prefix", lineStr)
@@ -536,7 +525,6 @@ func main() {
 			log.Printf("Failed to Accept(): %s\n", err)
 			continue
 		}
-		log.Print("connection accepted...")
 		go filterConnection(conn, &filterConfig)
 	}
 }
