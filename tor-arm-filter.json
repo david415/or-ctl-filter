@@ -1,0 +1,15 @@
+{
+    "client-allowed" : ["PROTOCOLINFO", "SETEVENTS NEWCONSENSUS BW"],
+    "client-allowed-prefixes" : ["GETCONF BandwidthRate", "GETCONF BandwidthBurst", "GETINFO", "GETCONF",
+"GETINFO traffic/written", "GETCONF ControlPort"],
+    "client-replacements" : {"SETEVENTS NOTICE ERR NEWDESC NEWCONSENSUS WARN CIRC BW NS" : "SETEVENTS NEWCONSENSUS BW"},
+    "client-replacement-prefixes": {"AUTHENTICATE":"AUTHENTICATE"},
+
+    "server-allowed" : ["250 OK", "250 ORPort", "250-process/user=debian-tor"],
+"server-allowed-prefixes" : ["250-events/names", "650 BW", "250 BandwidthRate=", "250 BandwidthBurst=", "250-traffic/read=", "250-traffic/written=", "250 ControlPort=", "250-VERSION", "250-PROTOCOLINFO"],
+    "server-replacements" : {"250-AUTH METHODS=NULL": "250-AUTH METHODS=COOKIE,SAFECOOKIE COOKIEFILE=\"/var/run/tor/control.authcookie\"", "510": "250 OK", "250-PROTOCOLINFO 1":"250-PROTOCOLINFO 2"},
+    "server-replacement-prefixes": {}
+}
+
+
+

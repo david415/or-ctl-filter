@@ -30,6 +30,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -42,10 +43,11 @@ import (
 )
 
 const (
-	defaultLogFile = "or-ctl-filter.log"
+	defaultLogFile    = "or-ctl-filter.log"
+	defaultConfigFile = "or-ctl-filter.json"
 
 	controlSocketFile = "/var/run/tor/control"
-	torControlAddr    = "127.0.0.1:9151" // Match ControlPort in torrc-defaults.
+	torControlAddr    = "127.0.0.1:8851" // Match ControlPort in torrc-defaults.
 
 	cmdProtocolInfo  = "PROTOCOLINFO"
 	cmdAuthenticate  = "AUTHENTICATE"
@@ -77,10 +79,71 @@ const (
 )
 
 var filteredControlAddr *net.UnixAddr
-var enableLogging bool
-var logFile string
+
+type FilterConfig struct {
+	ClientAllowed             []string          `json:"client-allowed"`
+	ClientAllowedPrefixes     []string          `json:"client-allowed-prefixes"`
+	ClientReplacements        map[string]string `json:"client-replacements"`
+	ClientReplacementPrefixes map[string]string `json:"client-replacement-prefixes"`
+
+	ServerAllowed             []string          `json:"server-allowed"`
+	ServerAllowedPrefixes     []string          `json:"server-allowed-prefixes"`
+	ServerReplacements        map[string]string `json:"server-replacements"`
+	ServerReplacementPrefixes map[string]string `json:"server-replacement-prefixes"`
+}
+
+func hasReplacementCommand(cmd string, replacements map[string]string) (string, bool) {
+	log.Print("maybeReplaceCommand\n")
+	replacement, ok := replacements[cmd]
+	if ok {
+		log.Printf("%v true", replacement)
+		return replacement, true
+	} else {
+		log.Printf("%v false", replacement)
+		return cmd, false
+	}
+}
+
+func hasReplacementPrefix(cmd string, replacements map[string]string) (string, bool) {
+	log.Print("hasReplacementPrefix")
+	for prefix, replacement := range replacements {
+		log.Printf("%s has prefix %s ?", cmd, prefix)
+		if strings.HasPrefix(cmd, prefix) {
+			log.Print("true")
+			return replacement, true
+		}
+	}
+	log.Print("false")
+	return cmd, false
+}
+
+func isCommandAllowed(cmd string, allowed []string) bool {
+	log.Print("isCommandAllowed")
+	for i := 0; i < len(allowed); i++ {
+		log.Printf("is %s == %s ?", cmd, allowed[i])
+		if cmd == allowed[i] {
+			log.Print("true")
+			return true
+		}
+	}
+	log.Print("false")
+	return false
+}
+
+func isPrefixAllowed(cmd string, allowed []string) bool {
+	log.Print("isPrefixAllowed")
+	for i := 0; i < len(allowed); i++ {
+		if strings.HasPrefix(cmd, allowed[i]) {
+			log.Print("true")
+			return true
+		}
+	}
+	log.Print("false")
+	return false
+}
 
 func readAuthCookie(path string) ([]byte, error) {
+	log.Print("read auth cookie")
 	// Read the cookie auth file.
 	cookie, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -90,6 +153,7 @@ func readAuthCookie(path string) ([]byte, error) {
 }
 
 func authSafeCookie(conn net.Conn, connReader *bufio.Reader, cookie []byte) ([]byte, error) {
+	log.Print("auth safe cookie")
 	clientNonce := make([]byte, authNonceLength)
 	if _, err := rand.Read(clientNonce); err != nil {
 		return nil, fmt.Errorf("generating AUTHCHALLENGE nonce: %s", err)
@@ -148,6 +212,7 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 	var canNull, canCookie, canSafeCookie bool
 	var cookiePath string
 
+	log.Print("authenticate")
 	// Figure out the best auth method, and where the cookie is if any.
 	protocolInfoReq := []byte(fmt.Sprintf("%s\n", cmdProtocolInfo))
 	if _, err := torConn.Write(protocolInfoReq); err != nil {
@@ -185,7 +250,9 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 					canSafeCookie = true
 				}
 			}
+			log.Print("after method for loop")
 			if (canCookie || canSafeCookie) && len(splitResp) == 3 {
+				log.Print("can cookie")
 				cookiePathStr := strings.TrimPrefix(splitResp[2], respProtocolInfoCookieFile)
 				if cookiePathStr == splitResp[2] {
 					continue
@@ -195,14 +262,20 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 					continue
 				}
 			}
+			log.Print("end?")
 		}
 	}
+	log.Print("end of auth detection")
 
 	// Authenticate using the best possible authentication method.
 	var authReq []byte
 	if canNull {
-		authReq = []byte(fmt.Sprintf("%s\n", cmdAuthenticate))
+		log.Print("meowwwwwwwwwwwwwwwwwwwwwwwww canNull")
+		if _, err := torConn.Write([]byte(cmdAuthenticate + "\n")); err != nil {
+			return fmt.Errorf("writing AUTHENTICATE request: %s", err)
+		}
 	} else if (canCookie || canSafeCookie) && (cookiePath != "") {
+		log.Print("cookie")
 		// Read the auth cookie.
 		cookie, err := readAuthCookie(cookiePath)
 		if err != nil {
@@ -216,65 +289,33 @@ func authenticate(torConn net.Conn, torConnReader *bufio.Reader, appConn net.Con
 		}
 		cookieStr := hex.EncodeToString(cookie)
 		authReq = []byte(fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr))
+		log.Printf("writing auth %s", authReq)
+		if _, err := torConn.Write(authReq); err != nil {
+			return fmt.Errorf("writing AUTHENTICATE request: %s", err)
+		}
 	} else {
 		return fmt.Errorf("no supported authentication methods")
-	}
-	if _, err := torConn.Write(authReq); err != nil {
-		return fmt.Errorf("writing AUTHENTICATE request: %s", err)
 	}
 	authResp, err := torConnReader.ReadBytes('\n')
 	if err != nil {
 		return fmt.Errorf("reading AUTHENTICATE response: %s", err)
 	}
 
-	// "Authenticate" the application.
-	authReq, err = appConnReader.ReadBytes('\n')
-	if err != nil {
-		return fmt.Errorf("reading app AUTHENTICATE request:%s", err)
-	}
-	splitReq := strings.SplitN(string(authReq), " ", 2)
-	if strings.ToUpper(splitReq[0]) != cmdAuthenticate { // TODO: PROTOCOLINFO/AUTHCHALLENGE/QUIT?
-		appConn.Write([]byte(errAuthenticationRequired))
-		return fmt.Errorf("invalid app command: '%s'", splitReq[0])
-	}
-	if _, err = appConn.Write(authResp); err != nil {
-		return fmt.Errorf("writing app AUTHENTICATE response: %s", err)
-	}
+	log.Printf("got response %s ; end of authenticate", authResp)
 	return nil
 }
 
 func syncedWrite(l *sync.Mutex, conn net.Conn, buf []byte) (int, error) {
+	log.Print("synced write")
 	l.Lock()
 	defer l.Unlock()
 	return conn.Write(buf)
 }
 
-func validateCmdSignal(splitReq []string) bool {
-	if len(splitReq) != 2 {
-		log.Printf("A->T: Filtering SIGNAL with invalid args\n")
-		return false
-	}
-	if splitReq[1] != argSignalNewnym {
-		log.Printf("A->T: Filtering SIGNAL: [%s]\n", splitReq[1])
-		return false
-	}
-	return true
-}
-
-func validateCmdGetinfo(splitReq []string) bool {
-	if len(splitReq) != 2 {
-		log.Printf("A->T: Filtering GETINFO with unexpected args\n")
-		return false
-	}
-	if splitReq[1] != argGetinfoSocks {
-		log.Printf("A->T: Filtering GETINFO: [%s]\n", splitReq[1])
-		return false
-	}
-	return true
-}
-
-func filterConnection(appConn net.Conn) {
+func filterConnection(appConn net.Conn, filterConfig *FilterConfig) {
 	defer appConn.Close()
+
+	log.Print("filter connection")
 
 	clientAddr := appConn.RemoteAddr()
 	log.Printf("New app connection from: %s\n", clientAddr)
@@ -307,29 +348,71 @@ func filterConnection(appConn net.Conn) {
 		return appConn.Write(b)
 	}
 
-	// Just proxy tor to application chatter.
+	// tor to application chatter.
 	go func() {
 		defer wg.Done()
 		defer appConn.Close()
 		defer torConn.Close()
 
 		for {
+			log.Print("reading from server")
 			line, err := torConnReader.ReadBytes('\n')
 			if err != nil {
 				errChan <- err
 				break
 			}
 			lineStr := strings.TrimSpace(string(line))
-			log.Printf("A<-T: [%s]\n", lineStr)
+			log.Printf("meow A<-T: [%s]\n", lineStr)
 
-			if _, err = writeAppConn(line); err != nil {
+			replacement, ok := hasReplacementPrefix(lineStr, filterConfig.ServerReplacementPrefixes)
+			if ok {
+				log.Printf("replacing %s with %s", lineStr, replacement)
+				if _, err = writeAppConn([]byte(replacement + "\n")); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				continue
+			}
+
+			replacement, ok = hasReplacementCommand(lineStr, filterConfig.ServerReplacements)
+			if ok {
+				log.Printf("replacing %s with %s", lineStr, replacement)
+				if _, err = writeAppConn([]byte(replacement + "\n")); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				continue
+			}
+
+			if isCommandAllowed(lineStr, filterConfig.ServerAllowed) {
+				log.Printf("%s is allowed", lineStr)
+				if _, err = writeAppConn([]byte(line)); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				log.Print("continue")
+				continue
+			}
+
+			if isPrefixAllowed(lineStr, filterConfig.ServerAllowedPrefixes) {
+				log.Printf("%s has an allowed prefix", lineStr)
+				if _, err = writeAppConn([]byte(line)); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				continue
+			}
+
+			log.Printf("A<-T denied %s !!!!!!!!!!!!!!!!!!!!!!!!!!!!", lineStr)
+			if _, err = writeAppConn([]byte("250 OK\n")); err != nil {
 				errChan <- err
 				break
 			}
+
 		}
 	}()
 
-	// Filter and selectively proxy or deny application to tor chatter.
+	// application to tor chatter
 	go func() {
 		defer wg.Done()
 		defer torConn.Close()
@@ -344,30 +427,51 @@ func filterConnection(appConn net.Conn) {
 			lineStr := strings.TrimSpace(string(line))
 			log.Printf("A->T: [%s]\n", lineStr)
 
-			// Filter out commands that aren't "required" for Tor Browser to
-			// work with SKIP_LAUNCH etc set.
-			allow := false // Default deny, yo.
-			splitReq := strings.SplitN(lineStr, " ", 2)
-			cmd := strings.ToUpper(splitReq[0])
-			switch cmd {
-			case cmdGetInfo:
-				allow = validateCmdGetinfo(splitReq)
-			case cmdSignal:
-				allow = validateCmdSignal(splitReq)
-			default:
-				log.Printf("A->T: Filtering command: [%s]\n", cmd)
+			replacement, ok := hasReplacementPrefix(lineStr, filterConfig.ClientReplacementPrefixes)
+			if ok {
+				log.Printf("replacing %s with %s", lineStr, replacement)
+				if _, err = torConn.Write([]byte(replacement + "\n")); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				continue
 			}
 
-			if allow {
-				if _, err = torConn.Write(line); err != nil {
+			replacement, ok = hasReplacementCommand(lineStr, filterConfig.ClientReplacements)
+			if ok {
+				log.Printf("replacing %s with %s", lineStr, replacement)
+				if _, err = torConn.Write([]byte(replacement + "\n")); err != nil { // XXX need \n ?
 					errChan <- err
 					break
 				}
-			} else {
-				if _, err = writeAppConn([]byte(errUnrecognizedCommand)); err != nil {
+				continue
+			}
+
+			if isCommandAllowed(lineStr, filterConfig.ClientAllowed) {
+				log.Printf("%s is allowed", lineStr)
+				if _, err = torConn.Write([]byte(line)); err != nil { // XXX need \n ?
 					errChan <- err
 					break
 				}
+				log.Print("continue")
+				continue
+			}
+			log.Printf("%s is NOT allowed", lineStr)
+
+			if isPrefixAllowed(lineStr, filterConfig.ClientAllowedPrefixes) {
+				log.Printf("%s has an allowed prefix", lineStr)
+				if _, err = torConn.Write([]byte(line)); err != nil { // XXX need \n ?
+					errChan <- err
+					break
+				}
+				continue
+			}
+
+			log.Printf("A->T: denied command: [%s]\n", lineStr)
+			//if _, err = writeAppConn([]byte(errUnrecognizedCommand)); err != nil {
+			if _, err = writeAppConn([]byte("250 OK\n")); err != nil {
+				errChan <- err
+				break
 			}
 		}
 	}()
@@ -382,11 +486,27 @@ func filterConnection(appConn net.Conn) {
 }
 
 func main() {
+	var enableLogging bool
+	var logFile string
+	var configFile string
+	var filterConfig FilterConfig
 	var err error
 
 	flag.BoolVar(&enableLogging, "enable-logging", false, "enable logging")
 	flag.StringVar(&logFile, "log-file", defaultLogFile, "log file")
+	flag.StringVar(&configFile, "config-file", defaultConfigFile, "filtration config file")
 	flag.Parse()
+
+	// Deal with filtration configuration.
+	if configFile != "" {
+		file, e := ioutil.ReadFile(configFile)
+		if e != nil {
+			panic("failed to read JSON filter config")
+		}
+		json.Unmarshal(file, &filterConfig)
+	} else {
+		panic("no filter config specified")
+	}
 
 	// Deal with logging.
 	if !enableLogging {
@@ -418,6 +538,7 @@ func main() {
 			log.Printf("Failed to Accept(): %s\n", err)
 			continue
 		}
-		go filterConnection(conn)
+		log.Print("connection accepted...")
+		go filterConnection(conn, &filterConfig)
 	}
 }
