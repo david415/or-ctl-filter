@@ -107,7 +107,6 @@ func hasReplacementCommand(cmd string, replacements map[string]string) (string, 
 func hasReplacementPrefix(cmd string, replacements map[string]string) (string, bool) {
 	log.Print("hasReplacementPrefix")
 	for prefix, replacement := range replacements {
-		log.Printf("%s has prefix %s ?", cmd, prefix)
 		if strings.HasPrefix(cmd, prefix) {
 			log.Print("true")
 			return replacement, true
@@ -120,7 +119,6 @@ func hasReplacementPrefix(cmd string, replacements map[string]string) (string, b
 func isCommandAllowed(cmd string, allowed []string) bool {
 	log.Print("isCommandAllowed")
 	for i := 0; i < len(allowed); i++ {
-		log.Printf("is %s == %s ?", cmd, allowed[i])
 		if cmd == allowed[i] {
 			log.Print("true")
 			return true
