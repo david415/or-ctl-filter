@@ -344,9 +344,11 @@ func filterCommand(cmd, failureCmd string, writeFunc func([]byte) (int, error), 
 		}
 		return
 	}
-	log.Printf("A<-T denied %s", cmd)
-	if _, err = writeFunc([]byte(failureCmd + "\n")); err != nil {
-		errChan <- err
+	log.Printf("denied %s", cmd)
+	if failureCmd != "" {
+		if _, err = writeFunc([]byte(failureCmd + "\n")); err != nil {
+			errChan <- err
+		}
 	}
 }
 
@@ -439,7 +441,7 @@ func filterConnection(appConn net.Conn, filterConfig *ServerClientFilterConfig) 
 				}
 				return n, err
 			}
-			filterCommand(lineStr, "250 OK", writeToTor, errChan, &clientFilterConfig)
+			filterCommand(lineStr, "", writeToTor, errChan, &clientFilterConfig)
 		}
 	}()
 
