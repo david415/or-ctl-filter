@@ -528,29 +528,23 @@ func main() {
 		}
 
 		var dstIp net.IP
-		var srcPort, dstPort uint16
 
 		fields := strings.Split(conn.RemoteAddr().String(), ":")
 		port_str := fields[1]
-		srcPort, err = proc.ParsePort(port_str)
-		if err != nil {
-			panic(err)
-		}
+
 		dstIp = net.ParseIP(listenIp)
 		if dstIp == nil {
 			panic("net.ParseIP fail")
 		}
-		dstPort, err = proc.ParsePort(listenPort)
-		if err != nil {
-			panic(err)
-		}
-		procInfo := proc.LookupTCPSocketProcess(srcPort, dstIp, dstPort)
+
+		aP, _ := strconv.ParseUint(port_str, 10, 16)
+		bP, _ := strconv.ParseUint(listenPort, 10, 16)
+		procInfo := proc.LookupTCPSocketProcess(uint16(aP), dstIp, uint16(bP))
 		if procInfo == nil {
 			panic("No proc found")
 		}
 
-		//fmt.Printf("proc info: uid %d pid %d execPath %s CmdLine %s\n", procInfo.Uid, procInfo.Pid, procInfo.ExePath, procInfo.CmdLine)
-		fmt.Printf("proc info: uid %d\n", procInfo.Uid)
+		fmt.Printf("proc info: uid %d pid %d execPath %s CmdLine %s\n", procInfo.Uid, procInfo.Pid, procInfo.ExePath, procInfo.CmdLine)
 		go filterConnection(conn, &filterConfig)
 	}
 }
