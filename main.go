@@ -25,6 +25,8 @@
 package main
 
 import (
+	"github.com/subgraph/fw-daemon/proc"
+
 	"bufio"
 	"crypto/hmac"
 	"crypto/rand"
@@ -114,6 +116,7 @@ func hasReplacementCommand(cmd string, replacements map[string]string) (string, 
 func hasReplacementPrefix(cmd string, replacements map[string]string) (string, bool) {
 	log.Print("hasReplacementPrefix")
 	for prefix, replacement := range replacements {
+		log.Printf("does cmd %s contain prefix %s\n", cmd, prefix)
 		if strings.HasPrefix(cmd, prefix) {
 			log.Print("true")
 			return replacement, true
@@ -399,7 +402,7 @@ func filterConnection(appConn net.Conn, filterConfig *ServerClientFilterConfig) 
 				break
 			}
 			lineStr := strings.TrimSpace(string(line))
-			log.Printf("meow A<-T: [%s]\n", lineStr)
+			log.Printf("A<-T: [%s]\n", lineStr)
 
 			serverFilterConfig := FilterConfig{
 				Allowed:             filterConfig.ServerAllowed,
@@ -459,11 +462,14 @@ func main() {
 	var logFile string
 	var configFile string
 	var filterConfig ServerClientFilterConfig
+	var listenPort, listenIp string
 	var err error
 
 	flag.BoolVar(&enableLogging, "enable-logging", false, "enable logging")
 	flag.StringVar(&logFile, "log-file", defaultLogFile, "log file")
 	flag.StringVar(&configFile, "config-file", defaultConfigFile, "filtration config file")
+	flag.StringVar(&listenPort, "listen-port", "", "TCP port to listen on")
+	flag.StringVar(&listenIp, "listen-ip", "", "IP address to listen on")
 	flag.Parse()
 
 	// Deal with filtration configuration.
@@ -494,7 +500,7 @@ func main() {
 	}
 
 	// Initialize the listener
-	ln, err := net.Listen("tcp", torControlAddr)
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%s", listenIp, listenPort))
 	if err != nil {
 		log.Fatalf("Failed to listen on the filter port: %s\n", err)
 	}
@@ -507,6 +513,31 @@ func main() {
 			log.Printf("Failed to Accept(): %s\n", err)
 			continue
 		}
+
+		var dstIp net.IP
+		var srcPort, dstPort uint16
+
+		fields := strings.Split(conn.RemoteAddr().String(), ":")
+		port_str := fields[1]
+		srcPort, err = proc.ParsePort(port_str)
+		if err != nil {
+			panic(err)
+		}
+		dstIp = net.ParseIP(listenIp)
+		if dstIp == nil {
+			panic("net.ParseIP fail")
+		}
+		dstPort, err = proc.ParsePort(listenPort)
+		if err != nil {
+			panic(err)
+		}
+		procInfo := proc.LookupTCPSocketProcess(srcPort, dstIp, dstPort)
+		if procInfo == nil {
+			panic("No proc found")
+		}
+
+		//fmt.Printf("proc info: uid %d pid %d execPath %s CmdLine %s\n", procInfo.Uid, procInfo.Pid, procInfo.ExePath, procInfo.CmdLine)
+		fmt.Printf("proc info: uid %d\n", procInfo.Uid)
 		go filterConnection(conn, &filterConfig)
 	}
 }
