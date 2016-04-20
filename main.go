@@ -20,16 +20,19 @@
 // filtering of Tor control port commands with, blocking everything by
 // default and only allowing commands specified on one of the "white-lists".
 // or-ctl-filter uses several different kinds of white-lists, namely:
+//
 // - client-allowed: requires exact string match
 // - client-allowed-prefixes: allows the commands if it matches one of the prefixes
 // - client-replacements: replaces commands with exact string match with another string
 // - client-replacement-prefixes: replaces commands with a prefix match
 // - server-...
+//
 // It is not only limited to the use case "I want to run Tor Browser on my desktop with a
 // system tor service and have 'about:tor' and 'New Identity' work while
 // disallowing scary control port commands", but could also be used to trick a program
 // into thinking that it gathered the "real" data from the tor control port when instead
 // our proxy feed it a bunch of lies, such as:
+//
 //    "server-replacement-prefixes": {
 //	"250-address=":"250-address=127.0.0.1"
 //    },
@@ -67,13 +70,9 @@ const (
 	cmdProtocolInfo  = "PROTOCOLINFO"
 	cmdAuthenticate  = "AUTHENTICATE"
 	cmdAuthChallenge = "AUTHCHALLENGE"
-	cmdGetInfo       = "GETINFO"
-	cmdSignal        = "SIGNAL"
 
-	argSignalNewnym = "NEWNYM"
-	argGetinfoSocks = "net/listeners/socks"
-	argServerHash   = "SERVERHASH="
-	argServerNonce  = "SERVERNONCE="
+	argServerHash  = "SERVERHASH="
+	argServerNonce = "SERVERNONCE="
 
 	respProtocolInfoAuth       = "250-AUTH"
 	respProtocolInfoMethods    = "METHODS="
